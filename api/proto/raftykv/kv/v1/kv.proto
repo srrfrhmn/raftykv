@@ -1,0 +1,92 @@
+// Client API v0 (docs/DESIGN.md §10.2). Scan, Watch, and Txn come later.
+syntax = "proto3";
+
+package raftykv.kv.v1;
+
+option go_package = "github.com/srrfrhmn/raftykv/api/kvpb";
+
+// Code is the result code of a client operation (docs/DESIGN.md §10.3).
+enum Code {
+  CODE_UNSPECIFIED = 0;
+  CODE_OK = 1;
+  CODE_NO_KEY = 2;
+  CODE_WRONG_LEADER = 3;
+  CODE_WRONG_GROUP = 4;
+  CODE_TIMEOUT = 5;
+  CODE_COMPACTED = 6;
+  CODE_TXN_CONFLICT = 7;
+  CODE_CAS_FAILED = 8;
+}
+
+// RequestHeader identifies a write for exactly-once semantics (§6.2).
+message RequestHeader {
+  uint64 client_id = 1;
+  // Increments by 1 for each write of this client. A retry reuses it.
+  uint64 seq = 2;
+  // Config number the client used to route the request.
+  uint64 config_num = 3;
+}
+
+message ResponseHeader {
+  Code code = 1;
+  // Set with CODE_WRONG_LEADER when the replica knows the leader.
+  uint64 leader_hint = 2;
+  // Shard revision after the operation.
+  uint64 revision = 3;
+}
+
+message KeyValue {
+  bytes key = 1;
+  bytes value = 2;
+  uint64 create_revision = 3;
+  uint64 mod_revision = 4;
+  uint64 version = 5;
+}
+
+message GetRequest {
+  RequestHeader header = 1;
+  bytes key = 2;
+}
+
+message GetResponse {
+  ResponseHeader header = 1;
+  KeyValue kv = 2;
+}
+
+message PutRequest {
+  RequestHeader header = 1;
+  bytes key = 2;
+  bytes value = 3;
+}
+
+message PutResponse {
+  ResponseHeader header = 1;
+}
+
+message DeleteRequest {
+  RequestHeader header = 1;
+  bytes key = 2;
+}
+
+message DeleteResponse {
+  ResponseHeader header = 1;
+}
+
+message CASRequest {
+  RequestHeader header = 1;
+  bytes key = 2;
+  // Write only if the key's mod_revision equals this. 0 means "key absent".
+  uint64 expected_revision = 3;
+  bytes value = 4;
+}
+
+message CASResponse {
+  ResponseHeader header = 1;
+}
+
+service KVService {
+  rpc Get(GetRequest) returns (GetResponse);
+  rpc Put(PutRequest) returns (PutResponse);
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+  rpc CAS(CASRequest) returns (CASResponse);
+}
