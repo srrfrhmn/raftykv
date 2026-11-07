@@ -46,7 +46,7 @@ raftykv also adds seven features that most Raft key-value stores do not have (§
 - Multi-region deployment with geo-aware placement (v1).
 - SQL or secondary indexes.
 - Values larger than 1 MiB.
-- Storage larger than the RAM of a node (v1 state machine is in memory; see §16).
+- Storage larger than the RAM of a node (v1 state machine is in memory; see §17).
 
 ---
 
@@ -544,7 +544,227 @@ raftykv/
 
 ---
 
-## 16. Risks and open questions
+## 16. Implementation plan: sprints and tickets
+
+### 16.1 Assumptions
+
+| Item | Value |
+|---|---|
+| Team | 1 developer |
+| Sprint length | 2 weeks |
+| Capacity | 13–16 points per sprint |
+| Point scale | 1, 2, 3, 5, 8 (8 = upper limit; split larger work) |
+| Ticket ID | `RKV-NNN`. The first two digits are the sprint number + 1. |
+| Done | Code merged, tests pass in CI, metrics and docs updated where relevant. |
+
+Each ticket lists its dependencies. A ticket can start only when its dependencies are done. Tickets in one sprint without a dependency between them can run in any order.
+
+### 16.2 Sprint overview
+
+| Sprint | Weeks | Milestone | Goal | Tickets | Points |
+|---|---|---|---|---|---|
+| S0 | 1–2 | — | Repo, CI, interfaces, protobuf | 5 | 12 |
+| S1 | 3–4 | M1 | Leader election | 5 | 15 |
+| S2 | 5–6 | M1 | Log replication | 4 | 14 |
+| S3 | 7–8 | M1 | Safety invariants and WAL | 5 | 16 |
+| S4 | 9–10 | M1 | Driver, transport, membership | 5 | 15 |
+| S5 | 11–12 | M2 | Single-group KV store | 5 | 14 |
+| S6 | 13–14 | M2 | Porcupine harness and MVCC | 5 | 16 |
+| S7 | 15–16 | M3 | Snapshots and log compaction | 4 | 15 |
+| S8 | 17–18 | M4 | Shard controller and multi-Raft | 4 | 16 |
+| S9 | 19–20 | M4 | Shard migration | 4 | 14 |
+| S10 | 21–22 | M5 | Deterministic simulator (F1) | 5 | 15 |
+| S11 | 23–24 | M5 | Seed gate and online audit (F2) | 4 | 14 |
+| S12 | 25–26 | M6 | Benchmark and profiling | 5 | 15 |
+| S13 | 27–28 | M6 | 52K target and observability | 4 | 13 |
+| S14 | 29–30 | M7 | Cross-shard transactions (F3) | 4 | 14 |
+| S15 | 31–32 | M7 | Transaction tests and witness replicas (F4) | 4 | 13 |
+| S16 | 33–34 | M7 | Rebalance (F5) and watch core (F6) | 4 | 13 |
+| S17 | 35–36 | M7 | Watch client, chaos CLI (F7), release | 5 | 14 |
+| **Total** | **36** | | | **81** | **258** |
+
+### 16.3 Tickets
+
+#### S0 — Foundation
+
+| ID | Ticket | Scope and acceptance | Pts | Depends |
+|---|---|---|---|---|
+| RKV-001 | Repo bootstrap | `go.mod`, Makefile, `golangci-lint`, GitHub Actions CI with `go test -race`. CI is green on an empty build. | 2 | — |
+| RKV-002 | Protobuf and gRPC definitions | Messages for Raft RPCs and client API v0 in `api/proto/`. Code generation runs from `make proto`. | 3 | 001 |
+| RKV-003 | I/O interfaces | `Clock`, `Transport`, `Disk`, `Rand` interfaces with real implementations. Unit tests for each real implementation. | 3 | 001 |
+| RKV-004 | Import lint rule | CI fails if `raft/`, `kv/`, or `shardkv/` imports `time`, `net`, `os`, or `math/rand`. | 2 | 003 |
+| RKV-005 | Logging and metrics skeleton | `slog` JSON logger with `node`, `group`, `term`, `index` fields. Prometheus registry and `/metrics` endpoint. | 2 | 001 |
+
+#### S1 — Raft core: election
+
+| ID | Ticket | Scope and acceptance | Pts | Depends |
+|---|---|---|---|---|
+| RKV-010 | Raft core skeleton | Pure state machine with `Tick`, `Step`, `Propose`, `Ready`. No I/O. Role transitions follower/candidate/leader. | 5 | 003 |
+| RKV-011 | Leader election | Randomized timeout (10–20 ticks), RequestVote, vote persistence in `Ready`. Exactly one leader per term in tests. | 3 | 010 |
+| RKV-012 | PreVote | Candidate runs a PreVote round before it increments its term. A rejoining partitioned node does not raise the term. | 2 | 011 |
+| RKV-013 | CheckQuorum | Leader steps down without majority contact in one election timeout. | 2 | 011 |
+| RKV-014 | In-memory test network | Test network for Raft unit tests: partition, drop, delay. Used by all later Raft tests. | 3 | 010 |
+
+#### S2 — Raft core: replication
+
+| ID | Ticket | Scope and acceptance | Pts | Depends |
+|---|---|---|---|---|
+| RKV-020 | Log and AppendEntries | Log storage interface (in-memory impl), AppendEntries with consistency check, conflict truncation. | 5 | 011 |
+| RKV-021 | Commit index rule | Leader commits only entries of its current term by majority match. Figure-8 scenario test passes. | 2 | 020 |
+| RKV-022 | Fast backtrack | Reject carries `(conflictTerm, firstIndexOfTerm)`. Catch-up of a 10,000-entry gap takes ≤ 3 round trips per term. | 2 | 020 |
+| RKV-023 | Pipelining and flow control | `Probe` and `Replicate` follower states. Max 256 in-flight messages. | 5 | 020 |
+
+#### S3 — Safety invariants and WAL
+
+| ID | Ticket | Scope and acceptance | Pts | Depends |
+|---|---|---|---|---|
+| RKV-024 | Safety invariant checkers | Test hooks for Election Safety, Log Matching, Leader Completeness, State Machine Safety. Run after each step in randomized tests. | 3 | 021 |
+| RKV-030 | Segmented WAL | 64 MiB segments, record `len · crc32c · type · payload`, sequential reader. | 5 | 003 |
+| RKV-031 | Hard state and recovery | Persist `term`, `vote`, `commit`. On start, read segments and truncate at the first bad CRC. | 3 | 030 |
+| RKV-032 | Group commit and parallel fsync | One fsync per batch. Leader replicates while it fsyncs; it counts itself only after fsync. | 3 | 030, 023 |
+| RKV-033 | WAL fuzz tests | `go test -fuzz` on random byte corruption. Recovery never panics and never returns a corrupt entry. | 2 | 031 |
+
+#### S4 — Driver, transport, membership (M1 exit)
+
+| ID | Ticket | Scope and acceptance | Pts | Depends |
+|---|---|---|---|---|
+| RKV-040 | Raft driver | Goroutine loop: persist `Ready` entries → send messages → apply committed entries. | 3 | 031 |
+| RKV-041 | gRPC transport | One connection per node pair. Reconnect with backoff. | 3 | 002, 040 |
+| RKV-042 | Proposal batching | Proposals in one tick go into one batch. Benchmark shows fewer entries per op. | 2 | 040 |
+| RKV-043 | Joint consensus | `C_old,new` → `C_new`. Add and remove replicas under partitions without two leaders. | 5 | 024 |
+| RKV-044 | Leadership transfer | `TimeoutNow`. Transfer completes in < 2 election timeouts. | 2 | 040 |
+
+#### S5 — Single-group KV store
+
+| ID | Ticket | Scope and acceptance | Pts | Depends |
+|---|---|---|---|---|
+| RKV-050 | KV state machine | B-tree per shard (`google/btree`). `Get`, `Put`, `Delete`, `CAS` apply logic. | 3 | 040 |
+| RKV-051 | Exactly-once dedup | `(clientID, seq)` table. Retries return the stored result. Expiry uses log-entry time. | 3 | 050 |
+| RKV-052 | Reply notification | Waiters keyed by `(index, term)`. Term change at that index returns `ErrWrongLeader`. | 2 | 050 |
+| RKV-053 | ReadIndex reads | Read index + heartbeat confirmation + wait for apply. Batches concurrent reads. | 3 | 050 |
+| RKV-054 | Client library v0 | Leader discovery, leader hint, retry with same `seq`, `ErrTimeout` handling. | 3 | 051, 052 |
+
+#### S6 — Porcupine harness and MVCC (M2 exit)
+
+| ID | Ticket | Scope and acceptance | Pts | Depends |
+|---|---|---|---|---|
+| RKV-060 | History recorder | Records `{clientID, op, input, output, callTime, returnTime}`. Timeout → return time infinity. | 2 | 054 |
+| RKV-061 | Porcupine KV model | Model partitioned by key for `Get`, `Put`, `Append`, `CAS`. | 3 | 060 |
+| RKV-062 | Process-level test cluster | Starts N real nodes in one test. Injects partitions, crashes, restarts. Used until the simulator exists. | 5 | 041 |
+| RKV-063 | Linearizability CI suite | Porcupine tests under faults in CI. HTML visualization saved as a CI artifact on failure. | 3 | 061, 062 |
+| RKV-064 | MVCC revisions | Per-shard revision; per-key `createRevision`, `modRevision`, `version`. 5-minute retention. | 3 | 050 |
+
+#### S7 — Snapshots and log compaction (M3)
+
+| ID | Ticket | Scope and acceptance | Pts | Depends |
+|---|---|---|---|---|
+| RKV-070 | Per-shard snapshot | Copy-on-write clone, background serialize, fsync, atomic rename, CRC32C. Apply loop does not stop. | 5 | 064, 051 |
+| RKV-071 | Trigger and truncation | Trigger at 64 MiB or 100k entries. Discard log ≤ snapshot index. Delete old WAL segments. | 3 | 070 |
+| RKV-072 | Chunked InstallSnapshot | 1 MiB chunks, resume from last acked offset, 64 MiB/s rate limit. | 5 | 070, 041 |
+| RKV-073 | Recovery and soak | Restart from snapshot + WAL tail. 1 h soak shows bounded WAL (R4). | 2 | 071, 072 |
+
+#### S8 — Shard controller and multi-Raft
+
+| ID | Ticket | Scope and acceptance | Pts | Depends |
+|---|---|---|---|---|
+| RKV-080 | Shard controller state machine | `Join`, `Leave`, `Move`, `Query` on Raft group 0. Full config history. | 3 | 054 |
+| RKV-081 | Balancing algorithm | Deterministic; minimum shard moves; max−min shards per group ≤ 1. | 3 | 080 |
+| RKV-082 | Multi-Raft node | Many groups per process. Shared transport, shared WAL directory, one tick loop, heartbeat coalescing. | 8 | 041, 032 |
+| RKV-083 | Client routing | `fnv64a(key) mod 1024` → group. Config cache. Refresh on `ErrWrongGroup`. | 2 | 080 |
+
+#### S9 — Shard migration (M4 exit)
+
+| ID | Ticket | Scope and acceptance | Pts | Depends |
+|---|---|---|---|---|
+| RKV-090 | Shard states and config order | `Serving`, `Pulling`, `BePulling`, `NotOwned`. Configs apply in order. Non-serving shards return `ErrWrongGroup`. | 3 | 082, 083 |
+| RKV-091 | PullShard and InstallShard | Pull RPC with config check. Receiver installs data and dedup table through its Raft log. | 5 | 090, 070 |
+| RKV-092 | DeleteShard and GC | Receiver confirms; sender GCs through its Raft log; ack stops retries. | 3 | 091 |
+| RKV-093 | Migration under churn | Porcupine passes with `Join`/`Leave`/`Move` every 1–5 s (R5). | 3 | 092, 063 |
+
+#### S10 — Deterministic simulator (F1)
+
+| ID | Ticket | Scope and acceptance | Pts | Depends |
+|---|---|---|---|---|
+| RKV-100 | Event scheduler | Discrete event queue ordered by `(virtualTime, seq)`. Virtual clock. Seeded RNG. | 5 | 003, 004 |
+| RKV-101 | Simulated network | Drop, delay, reorder, duplicate, 2-way/3-way/bridge partitions. | 3 | 100 |
+| RKV-102 | Simulated disk | Lose unsynced writes on crash, torn tail, `EIO`, slow fsync. | 3 | 100 |
+| RKV-103 | Chaos schedule format | YAML schedule format in `chaos/`. Parser and validator. Shared by simulator and F7. | 2 | — |
+| RKV-104 | Determinism check | Run each seed twice. Byte-identical event traces (R7). | 2 | 101, 102 |
+
+#### S11 — Seed gate and online audit (F2)
+
+| ID | Ticket | Scope and acceptance | Pts | Depends |
+|---|---|---|---|---|
+| RKV-110 | Seed sweep runner | 10,000 seeds × 30 s virtual time, run in parallel. Failed seeds go to a regression corpus. | 3 | 104, 103 |
+| RKV-111 | Lease reads with clock skew | Opt-in lease reads. Simulator tests skew inside and outside the drift bound. | 3 | 110, 053 |
+| RKV-112 | Audit sampling in client | Hybrid logical clock. Hash-based 0.1% key sample. Stream records to the audit service. | 3 | 060 |
+| RKV-113 | Audit service | 10 s windows per key, Porcupine with 2 s timeout, violation and inconclusive metrics, HTML storage. | 5 | 112, 061 |
+
+#### S12 — Benchmark and profiling
+
+| ID | Ticket | Scope and acceptance | Pts | Depends |
+|---|---|---|---|---|
+| RKV-120 | `raftykv-bench` | Closed loop, configurable mix, uniform and Zipf keys, JSON output with p50/p99/p999. | 3 | 083 |
+| RKV-121 | Reference cluster scripts | Scripts to deploy 5 nodes on reference hardware. First baseline result recorded. | 2 | 120 |
+| RKV-122 | Profiling pass | CPU and allocation profiles. `sync.Pool` buffers. Remove top allocation sites. | 5 | 121 |
+| RKV-123 | Read and apply tuning | ReadIndex batching and async apply tuning based on profiles. | 3 | 121 |
+| RKV-124 | Performance regression CI | CI fails on > 10% drop against the last baseline. | 2 | 120 |
+
+#### S13 — 52K target and observability (M6 exit)
+
+| ID | Ticket | Scope and acceptance | Pts | Depends |
+|---|---|---|---|---|
+| RKV-130 | Reach 52K ops/s | Tune batch size, pipeline depth, tick length. Publish result with hardware spec (R6). | 5 | 122, 123 |
+| RKV-131 | Full metrics set | All metrics in §13. Grafana dashboard JSON in `docs/`. | 3 | 005 |
+| RKV-132 | Status tooling | `GET /debug/groups` and `raftykv-ctl status`. | 3 | 082 |
+| RKV-133 | Follower reads | Opt-in per request. Porcupine coverage. | 2 | 053 |
+
+#### S14 — Cross-shard transactions (F3)
+
+| ID | Ticket | Scope and acceptance | Pts | Depends |
+|---|---|---|---|---|
+| RKV-140 | Timestamp oracle | In shard controller. Allocates ranges of 1,000 timestamps. Monotonic across leader changes. | 3 | 080 |
+| RKV-141 | Prewrite, commit, rollback | Lock and write columns in the state machine. Conflict detection on newer write or lock. | 5 | 064, 140 |
+| RKV-142 | Transaction client | Primary key selection, commit primary first, async secondaries. `Txn` API. | 3 | 141 |
+| RKV-143 | Lock resolver | Resolve via primary status. 3 s lock TTL. Wound-wait on conflict. | 3 | 142 |
+
+#### S15 — Transaction tests and witness replicas (F4)
+
+| ID | Ticket | Scope and acceptance | Pts | Depends |
+|---|---|---|---|---|
+| RKV-150 | Transaction verification | Bank-transfer invariant test (total balance constant) under faults in the simulator. | 3 | 143, 110 |
+| RKV-151 | Witness role | Votes and acks, no state machine, never leader, rejects `TimeoutNow`. | 5 | 043 |
+| RKV-152 | Witness log GC and repair | Witness drops entries applied on a majority of full replicas. Controller repairs single-copy groups first. | 3 | 151, 081 |
+| RKV-153 | Witness simulation tests | Seed sweep with witness groups. 0 violations. | 2 | 152, 110 |
+
+#### S16 — Rebalance (F5) and watch core (F6)
+
+| ID | Ticket | Scope and acceptance | Pts | Depends |
+|---|---|---|---|---|
+| RKV-160 | Load reports | Leaders report per-shard QPS, bytes, p99 in the config poll. | 2 | 090 |
+| RKV-161 | Rebalancer | Load score, move when max > 1.25 × mean for 60 s, max 2 concurrent moves. | 3 | 160, 092 |
+| RKV-162 | Hot-shard isolation | Move a shard with > 40% of group QPS to a dedicated group. | 3 | 161 |
+| RKV-163 | Watch ring and RPC | Per-shard event ring (100k events). `Watch` server stream. `ErrCompacted` for old revisions. | 5 | 064 |
+
+#### S17 — Watch client, chaos CLI (F7), release
+
+| ID | Ticket | Scope and acceptance | Pts | Depends |
+|---|---|---|---|---|
+| RKV-164 | Watch client | Prefix watch across shards, per-shard order, resume from last revision + 1. No lost or repeated events in tests. | 3 | 163 |
+| RKV-170 | Chaos agent | Network faults in the transport layer. Active only with `--enable-chaos`. | 3 | 041, 103 |
+| RKV-171 | `raftykv-ctl chaos` | `partition`, `crash`, `delay`, `run schedule.yaml` commands. | 3 | 170 |
+| RKV-172 | 24 h chaos soak | Real cluster, chaos schedule, audit service on. R3 and R4 hold; 0 violations. | 3 | 171, 113 |
+| RKV-173 | Release v1.0 | Final 10,000-seed gate, operator runbook, updated README and design doc. | 2 | 172 |
+
+### 16.4 Critical path
+
+`001 → 003 → 010 → 011 → 020 → 021 → 024 → 043` gives the Raft core.
+`030 → 031 → 040 → 041 → 082 → 090 → 091 → 092 → 093` gives the sharded store.
+The simulator (S10) depends only on S0 interfaces. Start S10 early if a second developer joins.
+
+---
+
+## 17. Risks and open questions
 
 | Risk | Impact | Mitigation |
 |---|---|---|
