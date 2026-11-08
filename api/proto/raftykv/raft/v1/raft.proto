@@ -1,0 +1,99 @@
+// Wire format for Raft messages between nodes (docs/DESIGN.md §5, §10.1).
+//
+// The Raft core (package raft) uses plain Go structs. The transport converts
+// them to and from these messages. Field numbers are stable: never reuse one.
+syntax = "proto3";
+
+package raftykv.raft.v1;
+
+option go_package = "github.com/srrfrhmn/raftykv/api/raftpb";
+
+enum EntryType {
+  ENTRY_TYPE_UNSPECIFIED = 0;
+  ENTRY_TYPE_NORMAL = 1;
+  ENTRY_TYPE_CONF_CHANGE = 2;
+}
+
+message Entry {
+  uint64 term = 1;
+  uint64 index = 2;
+  EntryType type = 3;
+  bytes data = 4;
+}
+
+enum MessageType {
+  MESSAGE_TYPE_UNSPECIFIED = 0;
+  MESSAGE_TYPE_VOTE = 1;
+  MESSAGE_TYPE_VOTE_RESP = 2;
+  MESSAGE_TYPE_PRE_VOTE = 3;
+  MESSAGE_TYPE_PRE_VOTE_RESP = 4;
+  MESSAGE_TYPE_APP = 5;
+  MESSAGE_TYPE_APP_RESP = 6;
+  MESSAGE_TYPE_HEARTBEAT = 7;
+  MESSAGE_TYPE_HEARTBEAT_RESP = 8;
+  MESSAGE_TYPE_SNAPSHOT = 9;
+  MESSAGE_TYPE_TIMEOUT_NOW = 10;
+  MESSAGE_TYPE_READ_INDEX = 11;
+  MESSAGE_TYPE_READ_INDEX_RESP = 12;
+}
+
+message Message {
+  MessageType type = 1;
+  // Shard group. 0 is the shard controller.
+  uint64 group_id = 2;
+  uint64 from = 3;
+  uint64 to = 4;
+  uint64 term = 5;
+  // Term and index of the entry before `entries` (AppendEntries), or of the
+  // sender's last entry (votes).
+  uint64 log_term = 6;
+  uint64 index = 7;
+  repeated Entry entries = 8;
+  uint64 commit = 9;
+  bool reject = 10;
+  // Fast backtrack hints (RKV-022).
+  uint64 reject_hint = 11;
+  uint64 conflict_term = 12;
+  // Opaque context, e.g. a ReadIndex request ID.
+  bytes context = 13;
+}
+
+message HardState {
+  uint64 term = 1;
+  uint64 vote = 2;
+  uint64 commit = 3;
+}
+
+message SendRequest {
+  // Messages for many groups share one stream (heartbeat coalescing).
+  repeated Message messages = 1;
+}
+
+message SendResponse {}
+
+message InstallSnapshotRequest {
+  uint64 group_id = 1;
+  uint64 from = 2;
+  uint64 to = 3;
+  uint64 term = 4;
+  uint64 last_included_index = 5;
+  uint64 last_included_term = 6;
+  uint64 offset = 7;
+  bytes data = 8;
+  bool done = 9;
+  // CRC32C of the full snapshot. Set when done is true.
+  uint32 crc32c = 10;
+}
+
+message InstallSnapshotResponse {
+  uint64 term = 1;
+  // Next offset the receiver expects. The sender resumes from here.
+  uint64 next_offset = 2;
+}
+
+service RaftTransportService {
+  // Send streams message batches from one node to another.
+  rpc Send(stream SendRequest) returns (SendResponse);
+  // InstallSnapshot streams snapshot chunks (docs/DESIGN.md §7.4).
+  rpc InstallSnapshot(stream InstallSnapshotRequest) returns (InstallSnapshotResponse);
+}

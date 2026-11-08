@@ -2,7 +2,19 @@
 
 A sharded, linearizable key-value store in Go. Each shard group uses Raft for replication.
 
-> **Status: design phase.** No code is written yet. The full design is in [`docs/DESIGN.md`](docs/DESIGN.md). This README describes the planned system.
+> **Status: M1 (Raft core) in progress.** Sprints S0 (foundation) and S1 (leader election, PreVote, CheckQuorum) are done. Log replication is next. The full design is in [`docs/DESIGN.md`](docs/DESIGN.md); the sections below describe the target system.
+
+## Development
+
+Requires Go 1.26+. The race detector needs cgo (on Windows: a MinGW `gcc` on `PATH`).
+
+| Command | Action |
+|---|---|
+| `make test` | Run all tests |
+| `make race` | Run all tests with the race detector |
+| `make importlint` | Check the determinism boundary (raft/kv code MUST NOT import `time`, `net`, `os`, `math/rand`) |
+| `make proto` | Lint `.proto` files and regenerate Go code (buf is pinned in `go.mod`; no `protoc` install needed) |
+| `make ci` | Run the CI checks locally |
 
 ![System architecture](docs/diagrams/architecture.svg)
 

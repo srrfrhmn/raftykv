@@ -1,0 +1,10 @@
+version: v2
+# Plugins run through `go tool`, so versions come from go.mod.
+# No system protoc is needed.
+plugins:
+  - local: ["go", "tool", "protoc-gen-go"]
+    out: .
+    opt: module=github.com/srrfrhmn/raftykv
+  - local: ["go", "tool", "protoc-gen-go-grpc"]
+    out: .
+    opt: module=github.com/srrfrhmn/raftykv
